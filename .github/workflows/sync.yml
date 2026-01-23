@@ -1,48 +1,58 @@
-name: Upstream Sync
-
-permissions:
-  contents: write
-  actions: read
+name: Simple Auto Sync
 
 on:
   schedule:
-    - cron: '*/5 * * * *' # 每天 UTC 00:00（北京时间 08:00）
-  workflow_dispatch:    # 允许手动运行
-  push:
-    branches: [ main ]  # 当上游推送时也触发
-  repository_dispatch:    # API触发
-    types: [sync-request]
+    - cron: '*/5 * * * *'  # 每5分钟
+  workflow_dispatch:
 
 jobs:
-  sync_latest_from_upstream:
-    name: Sync latest commits from upstream repo
+  sync:
     runs-on: ubuntu-latest
-    if: ${{ github.event.repository.fork }}
-
+    
     steps:
-      # Step 1: Checkout your fork
-      - name: Checkout target repo
-        uses: actions/checkout@v3
-        with:
-          ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
-          persist-credentials: false  # 重要：避免 workflow 权限冲突
-
-      # Step 2: Sync from upstream
-      - name: Sync upstream changes
-        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
-        with:
-          upstream_sync_repo: cmliu/edgetunnel
-          upstream_sync_branch: main
-          target_sync_branch: main
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
-          test_mode: false
-
-      # Step 3: Error handling (简化)
-      - name: Check sync result
-        if: failure()
+      - name: Debug info
         run: |
-          echo "同步失败！请手动同步："
-          echo "1. 访问你的仓库页面"
-          echo "2. 点击 'Sync fork' → 'Update branch'"
-          echo "3. 或运行: git pull upstream main"
+          echo "🏷️ 仓库: ${{ github.repository }}"
+          echo "🔧 事件: ${{ github.event_name }}"
+          echo "🕒 时间: $(date)"
+          
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Setup git config
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/cmliu/edgetunnel.git || git remote set-url upstream https://github.com/cmliu/edgetunnel.git
+          
+      - name: Fetch upstream
+        run: git fetch upstream
+        
+      - name: Merge changes
+        run: |
+          # 检查是否有更新
+          if git merge-base --is-ancestor upstream/main main; then
+            echo "✅ 已经是最新，无需同步"
+          else
+            echo "🔄 发现更新，开始合并..."
+            git merge upstream/main --no-edit
+            echo "✅ 合并完成"
+          fi
+          
+      - name: Push changes if needed
+        run: |
+          # 检查是否有本地提交
+          if git status --porcelain | grep -q .; then
+            echo "📤 有更新，推送到远程..."
+            git push origin main
+          else
+            echo "📭 无更新，跳过推送"
+          fi
+          
+      - name: Finish
+        run: echo "🎉 同步流程结束于 $(date)"
