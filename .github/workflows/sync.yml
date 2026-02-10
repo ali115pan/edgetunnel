@@ -1,40 +1,89 @@
-name: Upstream Sync
-
-permissions:
-  contents: write
+name: Auto Sync Upstream
 
 on:
   schedule:
-    - cron: "0 0 * * *" # every day
-  workflow_dispatch:
+    - cron: '*/5 * * * *'  # 每5分钟执行
+  workflow_dispatch:  # 允许手动触发
+  push:
+    branches: [main]
+
+permissions:
+  contents: write  # 关键：需要写权限才能 push
+  actions: read
 
 jobs:
-  sync_latest_from_upstream:
-    name: Sync latest commits from upstream repo
+  sync:
     runs-on: ubuntu-latest
-    if: ${{ github.event.repository.fork }}
+    if: github.repository_owner != 'github-actions[bot]'  # 防止在 fork 仓库中运行
 
     steps:
-      # Step 1: run a standard checkout action
-      - name: Checkout target repo
-        uses: actions/checkout@v3
-
-      # Step 2: run the sync action
-      - name: Sync upstream changes
-        id: sync
-        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
-        with:
-          upstream_sync_repo: cmliu/edgetunnel
-          upstream_sync_branch: main
-          target_sync_branch: main
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }} # automatically generated, no need to set
-
-          # Set test_mode true to run tests instead of the true action!!
-          test_mode: false
-
-      - name: Sync check
-        if: failure()
+      - name: Debug info
         run: |
-          echo "[Error] 由于上游仓库的 workflow 文件变更，导致 GitHub 自动暂停了本次自动更新，你需要手动 Sync Fork 一次，详细教程请查看项目README.md "
-          echo "[Error] Due to a change in the workflow file of the upstream repository, GitHub has automatically suspended the scheduled automatic update. You need to manually sync your fork. Please refer to the project README.md for instructions. "
-          exit 1
+          echo "🏷️ 仓库: ${{ github.repository }}"
+          echo "🔧 事件: ${{ github.event_name }}"
+          echo "🕒 时间: $(date)"
+          echo "👤 用户: ${{ github.actor }}"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}  # 使用 GITHUB_TOKEN 而非默认 token
+
+      - name: Setup git config
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          if ! git remote get-url upstream &>/dev/null; then
+            git remote add upstream https://github.com/cmliu/edgetunnel.git
+          else
+            git remote set-url upstream https://github.com/cmliu/edgetunnel.git
+          fi
+
+      - name: Fetch upstream
+        run: |
+          echo "📥 正在获取上游更新..."
+          git fetch upstream
+
+      - name: Check and merge
+        id: merge
+        run: |
+          UPSTREAM_MAIN="upstream/main"
+          CURRENT_BRANCH="origin/main"
+
+          # 获取上游最新 commit
+          git rev-parse --verify "$UPSTREAM_MAIN" || {
+            echo "⚠️ upstream/main 不存在，跳过合并"
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # 检查当前分支是否落后于上游
+          if git merge-base --is-ancestor "$UPSTREAM_MAIN" "$CURRENT_BRANCH"; then
+            echo "✅ 已经是最新，无需同步"
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "🔄 发现更新，开始合并..."
+            git merge "$UPSTREAM_MAIN" --no-edit -m "Merge upstream/main into main"
+            echo "has_update=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push changes
+        if: steps.merge.outputs.has_update == 'true'
+        run: |
+          echo "📤 正在推送到远程..."
+          git push origin main
+          echo "✅ 推送完成"
+
+      - name: Push info
+        if: steps.merge.outputs.has_update != 'true'
+        run: |
+          echo "📭 无更新，无需推送"
+
+      - name: Finish
+        run: |
+          echo "🎉 同步流程结束于 $(date)"
+          echo "⏰ 完成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
